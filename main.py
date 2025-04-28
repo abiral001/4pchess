@@ -1,228 +1,87 @@
-import pygame
-import sys
-import random
-import string
-from zeroconf import Zeroconf, ServiceInfo, ServiceBrowser
+import pygame, sys
 from components.game import Game
-from components.gui import GUI
-from components.net import Network
-from components.player import players_colors
+from components.gui  import GUI
+from components.net  import HostNetwork, ClientNetwork
 
-import socket
-import time
-import json
-
-# UDP settings for discovery
-# DISCOVERY_PORT = 5001
-# DISCOVERY_TIMEOUT = 30
-# BROADCAST_ADDRESS = '255.255.255.255'
-
-SCREEN_W, SCREEN_H = 500, 300
-BUTTON_W, BUTTON_H = 200, 50
+SCREEN_W, SCREEN_H = 500,300
 
 def show_menu():
     pygame.init()
-    screen = pygame.display.set_mode((SCREEN_W, SCREEN_H))
-    pygame.display.set_caption("4-Player Chess")
-    font = pygame.font.SysFont(None, 36)
-    single_rect = pygame.Rect(100, 60, BUTTON_W, BUTTON_H)
-    multi_rect  = pygame.Rect(100, 150, BUTTON_W, BUTTON_H)
-
+    screen=pygame.display.set_mode((SCREEN_W,SCREEN_H))
+    font = pygame.font.SysFont(None,36)
+    a=pygame.Rect(100,60,200,50)
+    b=pygame.Rect(100,150,200,50)
     while True:
-        screen.fill((50, 50, 50))
-        pygame.draw.rect(screen, (100, 100, 200), single_rect)
-        screen.blit(font.render("Single-Player", True, (255, 255, 255)),
-                    (single_rect.x + 20, single_rect.y + 10))
-        pygame.draw.rect(screen, (200, 100, 100), multi_rect)
-        screen.blit(font.render("Multi-Player", True, (255, 255, 255)),
-                    (multi_rect.x + 20, multi_rect.y + 10))
-
+        screen.fill((50,50,50))
+        pygame.draw.rect(screen,(100,100,200),a)
+        pygame.draw.rect(screen,(200,100,100),b)
+        screen.blit(font.render("Single-Player",1,(255,255,255)),(a.x+20,a.y+10))
+        screen.blit(font.render("Multi-Player",1,(255,255,255)),(b.x+20,b.y+10))
         for e in pygame.event.get():
-            if e.type == pygame.QUIT:
-                pygame.quit()
-                sys.exit()
-            if e.type == pygame.MOUSEBUTTONDOWN:
-                if single_rect.collidepoint(e.pos):
-                    return 'single'
-                if multi_rect.collidepoint(e.pos):
-                    return 'multi'
-
+            if e.type==pygame.QUIT: sys.exit()
+            if e.type==pygame.MOUSEBUTTONDOWN:
+                if a.collidepoint(e.pos): return 'single'
+                if b.collidepoint(e.pos): return 'multi'
         pygame.display.flip()
 
 def show_mp_menu():
-    screen = pygame.display.get_surface()
-    font = pygame.font.SysFont(None, 32)
-    create_rect = pygame.Rect(100, 60, BUTTON_W, BUTTON_H)
-    join_rect   = pygame.Rect(100, 150, BUTTON_W, BUTTON_H)
-
+    screen=pygame.display.get_surface()
+    font=pygame.font.SysFont(None,32)
+    a=pygame.Rect(100,60,200,50)
+    b=pygame.Rect(100,150,200,50)
     while True:
-        screen.fill((60, 60, 60))
-        pygame.draw.rect(screen, (100, 200, 100), create_rect)
-        screen.blit(font.render("Create Room", True, (0, 0, 0)),
-                    (create_rect.x + 20, create_rect.y + 10))
-        pygame.draw.rect(screen, (200, 200, 100), join_rect)
-        screen.blit(font.render("Join Room", True, (0, 0, 0)),
-                    (join_rect.x + 20, join_rect.y + 10))
-
+        screen.fill((60,60,60))
+        pygame.draw.rect(screen,(100,200,100),a)
+        pygame.draw.rect(screen,(200,200,100),b)
+        screen.blit(font.render("Host Game",True,(0,0,0)),(a.x+20,a.y+10))
+        screen.blit(font.render("Join Game",True,(0,0,0)),(b.x+20,b.y+10))
         for e in pygame.event.get():
-            if e.type == pygame.QUIT:
-                pygame.quit()
-                sys.exit()
-            if e.type == pygame.MOUSEBUTTONDOWN:
-                if create_rect.collidepoint(e.pos):
-                    return 'create'
-                if join_rect.collidepoint(e.pos):
-                    return 'join'
-
+            if e.type==pygame.QUIT: sys.exit()
+            if e.type==pygame.MOUSEBUTTONDOWN:
+                if a.collidepoint(e.pos): return 'host'
+                if b.collidepoint(e.pos): return 'join'
         pygame.display.flip()
-
-def input_code(prompt="Enter room code: "):
-    screen = pygame.display.get_surface()
-    font = pygame.font.SysFont(None, 28)
-    code = ""
-
-    while True:
-        screen.fill((30, 30, 30))
-        screen.blit(font.render(prompt + code, True, (255, 255, 255)),
-                    (20, 20))
-        pygame.display.flip()
-
-        for e in pygame.event.get():
-            if e.type == pygame.QUIT:
-                pygame.quit()
-                sys.exit()
-            elif e.type == pygame.KEYDOWN:
-                if e.key == pygame.K_RETURN and code:
-                    return code
-                elif e.key == pygame.K_BACKSPACE:
-                    code = code[:-1]
-                elif len(e.unicode) == 1:
-                    code += e.unicode
-
-# for creating a room code for 4 players to join
-def generate_code(length=6):
-    return ''.join(random.choices(string.ascii_uppercase + string.digits, k=length))
-
-class _JoinListener:
-    def __init__(self, code):
-        self.code = code
-        self.peers = []
-    def add_service(self, zeroconf, type, name):
-        info = zeroconf.get_service_info(type, name)
-        if not info: return
-        props = {k.decode(): v.decode() for k,v in info.properties.items()}
-        if props.get("code") == self.code:
-            ip = socket.inet_ntoa(info.addresses[0])
-            self.peers.append((ip, info.port))
-            print(f"[JOINER] Discovered host {ip}:{info.port} via mDNS")
-
-# def decode_peers_from_code(code, mode):
-#     '''
-#     mode = "join" or "create"
-#     returns a list of tuples (ip, port)
-#     '''    
-#     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-#     sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-#     sock.settimeout(DISCOVERY_TIMEOUT)
-#     sock.bind(('', DISCOVERY_PORT))
-#     peers = []
-#     start = time.time()
-#     if mode == "create":
-#         while time.time() - start < DISCOVERY_TIMEOUT:
-#             try:
-#                 data, addr = sock.recvfrom(1024)
-#                 msg = json.loads(data.decode())
-#                 if msg.get('type') == 'join' and msg.get('code') == code:
-#                     peer = (addr[0], 5000)
-#                     if peer not in peers:
-#                         print(f"Peer found: {peer}")
-#                         peers.append(peer)
-#                         resp = {'type': 'host', 'code': code}
-#                         sock.sendto(json.dumps(resp).encode(), addr)
-#             except socket.timeout:
-#                 continue
-#     else:
-#         join_msg = json.dumps({'type': 'join', 'code': code})
-#         while time.time() - start < DISCOVERY_TIMEOUT:
-#             sock.sendto(join_msg.encode(), (BROADCAST_ADDRESS, DISCOVERY_PORT))
-#             time.sleep(1)
-#         # collect host responses
-#         start = time.time()
-#         while time.time() - start < DISCOVERY_TIMEOUT:
-#             try:
-#                 data, addr = sock.recvfrom(1024)
-#                 msg = json.loads(data.decode())
-#                 if msg.get('type') == 'host' and msg.get('code') == code:
-#                     peer = (addr[0], 5000)
-#                     if peer not in peers:
-#                         peers.append(peer)
-#             except socket.timeout:
-#                 continue
-#     sock.close()
-#     return peers
-
-def choose_color():
-    while True:
-        c = input(f"Choose your color {players_colors}: ").lower()
-        if c in players_colors:
-            return c
 
 def main():
     mode = show_menu()
     pygame.display.quit()
 
-    if mode == 'single':
+    if mode=='single':
         game = Game()
-        gui = GUI(game)
+        gui  = GUI(game)
         gui.run()
         return
 
     pygame.init()
-    pygame.display.set_mode((SCREEN_W, SCREEN_H))
-    mp_choice = show_mp_menu()
+    pygame.display.set_mode((SCREEN_W,SCREEN_H))
+    choice = show_mp_menu()
 
-    if mp_choice == 'create':
-        room_code = generate_code()
-        input_code(f"Room created: {room_code}(press Enter to continue)")
-    else:
-        room_code = input_code()
+    if choice=='host':
+        host_net = HostNetwork()
+        print("[HOST] Waiting for players (min 2, max 4). Press S to start.")
+        # in your main loop you could listen for S; for brevity:
+        while True:
+            for e in pygame.event.get():
+                if e.type==pygame.KEYDOWN and e.key==pygame.K_s:
+                    if len(host_net.clients)+1 >= 2:
+                        host_net.start_game()
+                        goto_game = True
+                        break
+            if 'goto_game' in locals(): break
+        game = Game()
+        host_net.on_move = game.apply_remote_move
+        gui = GUI(game, local_color=host_net.assignments[('HOST',host_net.port)],
+                  network=host_net)
+        gui.run()
 
-    peers = []
-    zeroconf = Zeroconf()
-    if mp_choice == 'create':
-        hostname = socket.gethostname()
-        local_ip = socket.gethostbyname(hostname)
-        info = ServiceInfo(
-            "_4playerchess._udp.local.",
-            f"{room_code}._4playerchess._udp.local.",
-            addresses=[socket.inet_aton(local_ip)],
-            port=5000,
-            properties={"code": room_code}
-        )
-        zeroconf.register_service(info)
-        print(f"[HOST] Advertising mDNS service on {local_ip}:5000 with code {room_code}")
-        time.sleep(3)
+    else:  # join
+        # ask for host IP
+        host_ip = input("Enter host IP (e.g. 10.10.54.196): ").strip()
+        cli_net = ClientNetwork(host_ip)
+        game    = Game()
+        cli_net.on_move = game.apply_remote_move
+        gui = GUI(game, local_color=cli_net.color, network=cli_net)
+        gui.run()
 
-    else:
-        listener = _JoinListener(room_code)
-        ServiceBrowser(zeroconf, "_4playerchess._udp.local.", listener)
-        print(f"[JOINER] Browsing mDNS for code {room_code}…")
-        time.sleep(3)
-        peers = listener.peers
-        if not peers:
-            host_ip = input(f"Could not discover host via mDNS. Enter host IP: ")
-            peers = [(host_ip.strip(), 5000)]
-
-    zeroconf.close()
-    local_color = choose_color()
-
-    game = Game()
-    network = Network(local_color, peers)
-    game.on_remote_move = game.apply_remote_move
-    network.on_move   = game.on_remote_move
-
-    gui = GUI(game, local_color=local_color, network=network)
-    gui.run()
-
-if __name__ == '__main__':
+if __name__=='__main__':
     main()
