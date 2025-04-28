@@ -21,24 +21,25 @@ class HostNetwork:
         self.port         = port
         self.min_players  = min_players
         self.max_players  = max_players
-        self.clients      = {}
-        self.peer_pubkeys = {}
-        self.assignments  = {}
-        self.on_move      = None
-        self.color        = None                    # ← add this
-        self.private_key  = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        self.clients      = {}     # (addr)->socket
+        self.peer_pubkeys = {}     # color->public key
+        self.assignments  = {}     # (addr)->color
+        self.on_move      = None   # callback(fr,to,color)
+        self.color        = None
+
+        self.private_key  = rsa.generate_private_key(65537, 2048)
         self.public_key   = self.private_key.public_key()
         self._shutdown    = False
 
         self.server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.server.bind(('0.0.0.0', self.port))    # explicit bind
+        self.server.bind(('0.0.0.0', self.port))
         self.server.listen(self.max_players)
         threading.Thread(target=self._accept_loop, daemon=True).start()
 
     def _accept_loop(self):
         while not self._shutdown and len(self.clients) < self.max_players:
-            client_sock, addr = self.server.accept()
-            self.clients[addr] = client_sock
+            sock, addr = self.server.accept()
+            self.clients[addr] = sock
             print(f"[HOST] Client connected: {addr}")
 
     def start_game(self):
@@ -49,34 +50,28 @@ class HostNetwork:
 
         host_addr = ('HOST', self.port)
         self.assignments[host_addr] = pool.pop()
-        self.color = self.assignments[host_addr]        # ← keep track of host color
+        self.color = self.assignments[host_addr]
         for addr in self.clients:
             self.assignments[addr] = pool.pop()
 
-        # send each client their assigned color
         for addr, sock in self.clients.items():
-            send_json(sock, {
-                "type": "assign",
-                "color": self.assignments[addr]
-            })
+            send_json(sock, {"type":"assign","color":self.assignments[addr]})
 
-        # collect client pubkeys
         self.peer_pubkeys[self.color] = self.public_key
         for addr, sock in self.clients.items():
             msg = recv_json(sock)
             pub = serialization.load_pem_public_key(msg["pem"].encode())
             self.peer_pubkeys[msg["color"]] = pub
 
-        # send init (all pubkeys and assignments)
         init = {
             "type":        "init",
-            "assignments": {str(k): v for k, v in self.assignments.items()},
+            "assignments": {str(k):v for k,v in self.assignments.items()},
             "pubkeys":     {}
         }
         for c, pub in self.peer_pubkeys.items():
             init["pubkeys"][c] = pub.public_bytes(
-                encoding=serialization.Encoding.PEM,
-                format=serialization.PublicFormat.SubjectPublicKeyInfo
+                serialization.Encoding.PEM,
+                serialization.PublicFormat.SubjectPublicKeyInfo
             ).decode()
 
         for sock in self.clients.values():
@@ -86,7 +81,7 @@ class HostNetwork:
 
     def _relay_loop(self):
         while True:
-            for addr, sock in list(self.clients.items()):
+            for sock in list(self.clients.values()):
                 try:
                     msg = recv_json(sock)
                 except ConnectionError:
@@ -94,50 +89,32 @@ class HostNetwork:
                 if msg["type"] == "move":
                     pub = self.peer_pubkeys[msg["color"]]
                     data = json.dumps({
-                        "type":"move",
-                        "color":msg["color"],
-                        "from":msg["from"],
-                        "to":msg["to"]
+                        "type":"move","color":msg["color"],
+                        "from":msg["from"],"to":msg["to"]
                     }).encode()
                     sig = bytes.fromhex(msg["sig"])
                     pub.verify(
                         sig, data,
-                        padding.PSS(
-                            mgf=padding.MGF1(hashes.SHA256()),
-                            salt_length=padding.PSS.MAX_LENGTH
-                        ),
+                        padding.PSS(mgf=padding.MGF1(hashes.SHA256()),
+                                    salt_length=padding.PSS.MAX_LENGTH),
                         hashes.SHA256()
                     )
-                    # forward to clients
                     for s in self.clients.values():
                         send_json(s, msg)
-                    # invoke local callback
                     if self.on_move:
                         self.on_move(tuple(msg["from"]),
                                      tuple(msg["to"]),
                                      msg["color"])
 
     def send_move(self, from_pos, to_pos):
-        # now only two args needed; use self.color
-        packet = {
-            "type":  "move",
-            "color": self.color,
-            "from":  from_pos,
-            "to":    to_pos,
-            "sig":   self.private_key.sign(
-                         json.dumps({
-                             "type":"move",
-                             "color":self.color,
-                             "from":from_pos,
-                             "to":to_pos
-                         }).encode(),
-                         padding.PSS(
-                             mgf=padding.MGF1(hashes.SHA256()),
-                             salt_length=padding.PSS.MAX_LENGTH
-                         ),
-                         hashes.SHA256()
-                     ).hex()
-        }
+        data   = {"type":"move","color":self.color,"from":from_pos,"to":to_pos}
+        sig    = self.private_key.sign(
+                     json.dumps(data).encode(),
+                     padding.PSS(mgf=padding.MGF1(hashes.SHA256()),
+                                 salt_length=padding.PSS.MAX_LENGTH),
+                     hashes.SHA256()
+                 ).hex()
+        packet = {**data, "sig": sig}
         for sock in self.clients.values():
             send_json(sock, packet)
         if self.on_move:
@@ -149,16 +126,14 @@ class HostNetwork:
         for s in self.clients.values():
             s.close()
 
-
 class ClientNetwork:
     def __init__(self, host_ip, port=5000):
-        self.host_addr    = (host_ip, port)
         self.sock         = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.sock.connect(self.host_addr)
-
-        self.private_key  = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        self.sock.connect((host_ip, port))
+        self.private_key  = rsa.generate_private_key(65537, 2048)
         self.public_key   = self.private_key.public_key()
         self.color        = None
+        self.assignments  = {}
         self.peer_pubkeys = {}
         self.on_move      = None
         self.ready        = False
@@ -168,14 +143,14 @@ class ClientNetwork:
     def _handshake_and_listen(self):
         msg = recv_json(self.sock)
         self.color = msg["color"]
-
         pem = self.public_key.public_bytes(
-            encoding=serialization.Encoding.PEM,
-            format=serialization.PublicFormat.SubjectPublicKeyInfo
-        ).decode()
+                  serialization.Encoding.PEM,
+                  serialization.PublicFormat.SubjectPublicKeyInfo
+              ).decode()
         send_json(self.sock, {"type":"pubkey","color":self.color,"pem":pem})
 
         init = recv_json(self.sock)
+        self.assignments = init["assignments"]
         for c, pem in init["pubkeys"].items():
             self.peer_pubkeys[c] = serialization.load_pem_public_key(pem.encode())
 
@@ -183,20 +158,17 @@ class ClientNetwork:
 
         while True:
             msg = recv_json(self.sock)
-            if msg["type"] == "move" and self.on_move:
+            if msg["type"]=="move" and self.on_move:
                 self.on_move(tuple(msg["from"]),
-                              tuple(msg["to"]),
-                              msg["color"])
+                             tuple(msg["to"]),
+                             msg["color"])
 
     def send_move(self, from_pos, to_pos):
-        data = {"type":"move","color":self.color,"from":from_pos,"to":to_pos}
-        sig  = self.private_key.sign(
-            json.dumps(data).encode(),
-            padding.PSS(
-                mgf=padding.MGF1(hashes.SHA256()),
-                salt_length=padding.PSS.MAX_LENGTH
-            ),
-            hashes.SHA256()
-        ).hex()
-        packet = {**data, "sig": sig}
-        send_json(self.sock, packet)
+        data   = {"type":"move","color":self.color,"from":from_pos,"to":to_pos}
+        sig    = self.private_key.sign(
+                     json.dumps(data).encode(),
+                     padding.PSS(mgf=padding.MGF1(hashes.SHA256()),
+                                 salt_length=padding.PSS.MAX_LENGTH),
+                     hashes.SHA256()
+                 ).hex()
+        send_json(self.sock, {**data, "sig":sig})
