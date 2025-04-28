@@ -137,7 +137,7 @@ def main():
         while True:
             screen.fill((30, 30, 30))
             ip_surf   = font.render(f"Host IP: {local_ip}", True, (255,255,255))
-            prompt_surf = font.render("Waiting for players (2–4). Press S to start.", True, (200,200,200))
+            prompt_surf = font.render("Waiting for players (2-4). Press S to start.", True, (200,200,200))
             screen.blit(ip_surf, (20, SCREEN_H//2 - 40))
             screen.blit(prompt_surf, (20, SCREEN_H//2))
             pygame.display.flip()
