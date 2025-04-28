@@ -2,6 +2,7 @@ import pygame
 import sys
 import random
 import string
+from zeroconf import Zeroconf, ServiceInfo, ServiceBrowser
 from components.game import Game
 from components.gui import GUI
 from components.net import Network
@@ -100,53 +101,65 @@ def input_code(prompt="Enter room code: "):
 
 # for creating a room code for 4 players to join
 def generate_code(length=6):
-    return ''.join(random.choices(string.ascii_uppercase + string.digits,
-                                  k=length))
+    return ''.join(random.choices(string.ascii_uppercase + string.digits, k=length))
 
-def decode_peers_from_code(code, mode):
-    '''
-    mode = "join" or "create"
-    returns a list of tuples (ip, port)
-    '''    
-    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-    sock.settimeout(DISCOVERY_TIMEOUT)
-    sock.bind(('', DISCOVERY_PORT))
-    peers = []
-    start = time.time()
-    if mode == "create":
-        while time.time() - start < DISCOVERY_TIMEOUT:
-            try:
-                data, addr = sock.recvfrom(1024)
-                msg = json.loads(data.decode())
-                if msg.get('type') == 'join' and msg.get('code') == code:
-                    peer = (addr[0], 5000)
-                    if peer not in peers:
-                        print(f"Peer found: {peer}")
-                        peers.append(peer)
-                        resp = {'type': 'host', 'code': code}
-                        sock.sendto(json.dumps(resp).encode(), addr)
-            except socket.timeout:
-                continue
-    else:
-        join_msg = json.dumps({'type': 'join', 'code': code})
-        while time.time() - start < DISCOVERY_TIMEOUT:
-            sock.sendto(join_msg.encode(), (BROADCAST_ADDRESS, DISCOVERY_PORT))
-            time.sleep(1)
-        # collect host responses
-        start = time.time()
-        while time.time() - start < DISCOVERY_TIMEOUT:
-            try:
-                data, addr = sock.recvfrom(1024)
-                msg = json.loads(data.decode())
-                if msg.get('type') == 'host' and msg.get('code') == code:
-                    peer = (addr[0], 5000)
-                    if peer not in peers:
-                        peers.append(peer)
-            except socket.timeout:
-                continue
-    sock.close()
-    return peers
+class _JoinListener:
+    def __init__(self, code):
+        self.code = code
+        self.peers = []
+    def add_service(self, zeroconf, type, name):
+        info = zeroconf.get_service_info(type, name)
+        if not info: return
+        props = {k.decode(): v.decode() for k,v in info.properties.items()}
+        if props.get("code") == self.code:
+            ip = socket.inet_ntoa(info.addresses[0])
+            self.peers.append((ip, info.port))
+            print(f"[JOINER] Discovered host {ip}:{info.port} via mDNS")
+
+# def decode_peers_from_code(code, mode):
+#     '''
+#     mode = "join" or "create"
+#     returns a list of tuples (ip, port)
+#     '''    
+#     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+#     sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+#     sock.settimeout(DISCOVERY_TIMEOUT)
+#     sock.bind(('', DISCOVERY_PORT))
+#     peers = []
+#     start = time.time()
+#     if mode == "create":
+#         while time.time() - start < DISCOVERY_TIMEOUT:
+#             try:
+#                 data, addr = sock.recvfrom(1024)
+#                 msg = json.loads(data.decode())
+#                 if msg.get('type') == 'join' and msg.get('code') == code:
+#                     peer = (addr[0], 5000)
+#                     if peer not in peers:
+#                         print(f"Peer found: {peer}")
+#                         peers.append(peer)
+#                         resp = {'type': 'host', 'code': code}
+#                         sock.sendto(json.dumps(resp).encode(), addr)
+#             except socket.timeout:
+#                 continue
+#     else:
+#         join_msg = json.dumps({'type': 'join', 'code': code})
+#         while time.time() - start < DISCOVERY_TIMEOUT:
+#             sock.sendto(join_msg.encode(), (BROADCAST_ADDRESS, DISCOVERY_PORT))
+#             time.sleep(1)
+#         # collect host responses
+#         start = time.time()
+#         while time.time() - start < DISCOVERY_TIMEOUT:
+#             try:
+#                 data, addr = sock.recvfrom(1024)
+#                 msg = json.loads(data.decode())
+#                 if msg.get('type') == 'host' and msg.get('code') == code:
+#                     peer = (addr[0], 5000)
+#                     if peer not in peers:
+#                         peers.append(peer)
+#             except socket.timeout:
+#                 continue
+#     sock.close()
+#     return peers
 
 def choose_color():
     while True:
@@ -174,10 +187,33 @@ def main():
     else:
         room_code = input_code()
 
-    peers = decode_peers_from_code(room_code, mp_choice)
-    if mp_choice == 'join':
-        host_ip = input_code("Could not autodiscover room creator. Enter room creator IP: ")
-        peers = [(host_ip.strip(), 5000)]
+    peers = []
+    zeroconf = Zeroconf()
+    if mp_choice == 'create':
+        hostname = socket.gethostname()
+        local_ip = socket.gethostbyname(hostname)
+        info = ServiceInfo(
+            "_4playerchess._udp.local.",
+            f"{room_code}._4playerchess._udp.local.",
+            addresses=[socket.inet_aton(local_ip)],
+            port=5000,
+            properties={"code": room_code}
+        )
+        zeroconf.register_service(info)
+        print(f"[HOST] Advertising mDNS service on {local_ip}:5000 with code {room_code}")
+        time.sleep(3)
+
+    else:
+        listener = _JoinListener(room_code)
+        ServiceBrowser(zeroconf, "_4playerchess._udp.local.", listener)
+        print(f"[JOINER] Browsing mDNS for code {room_code}…")
+        time.sleep(3)
+        peers = listener.peers
+        if not peers:
+            host_ip = input(f"Could not discover host via mDNS. Enter host IP: ")
+            peers = [(host_ip.strip(), 5000)]
+
+    zeroconf.close()
     local_color = choose_color()
 
     game = Game()
