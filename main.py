@@ -175,6 +175,9 @@ def main():
         room_code = input_code()
 
     peers = decode_peers_from_code(room_code, mp_choice)
+    if mp_choice == 'join':
+        host_ip = input_code("Could not autodiscover room creator. Enter room creator IP: ")
+        peers = [(host_ip.strip(), 5000)]
     local_color = choose_color()
 
     game = Game()
