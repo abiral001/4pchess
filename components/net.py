@@ -145,47 +145,52 @@ class ClientNetwork:
         self.host_addr    = (host_ip, port)
         self.sock         = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.sock.connect(self.host_addr)
+
         self.private_key  = rsa.generate_private_key(public_exponent=65537, key_size=2048)
         self.public_key   = self.private_key.public_key()
         self.color        = None
         self.peer_pubkeys = {}
         self.on_move      = None
 
-        threading.Thread(target=self._listen, daemon=True).start()
+        self.ready        = False
 
+        # start handshake + listener thread
+        threading.Thread(target=self._handshake_and_listen, daemon=True).start()
+
+    def _handshake_and_listen(self):
+        # 1) receive assign
         msg = recv_json(self.sock)
         self.color = msg["color"]
 
+        # 2) send our pubkey
         pem = self.public_key.public_bytes(
             encoding=serialization.Encoding.PEM,
             format=serialization.PublicFormat.SubjectPublicKeyInfo
         ).decode()
         send_json(self.sock, {"type": "pubkey", "color": self.color, "pem": pem})
 
+        # 3) receive init (assignments + all pubkeys)
         init = recv_json(self.sock)
+        # load all peer pubkeys
         for c, pem in init["pubkeys"].items():
             self.peer_pubkeys[c] = serialization.load_pem_public_key(pem.encode())
 
+        # mark ready so main loop can proceed
+        self.ready = True
+
+        # 4) finally, enter the normal move‐listening loop
+        while True:
+            msg = recv_json(self.sock)
+            if msg["type"] == "move" and self.on_move:
+                self.on_move(tuple(msg["from"]), tuple(msg["to"]), msg["color"])
+
     def send_move(self, fr, to):
-        data   = {"type": "move", "color": self.color, "from": fr, "to": to}
+        data   = {"type":"move","color":self.color,"from":fr,"to":to}
         sig    = self.private_key.sign(
             json.dumps(data).encode(),
-            padding.PSS(
-                mgf=padding.MGF1(hashes.SHA256()),
-                salt_length=padding.PSS.MAX_LENGTH
-            ),
+            padding.PSS(mgf=padding.MGF1(hashes.SHA256()),
+                        salt_length=padding.PSS.MAX_LENGTH),
             hashes.SHA256()
         ).hex()
-        packet = {"type": "move", **data, "sig": sig}
+        packet = {"type":"move", **data, "sig":sig}
         send_json(self.sock, packet)
-
-    def _listen(self):
-        while True:
-            try:
-                msg = recv_json(self.sock)
-            except ConnectionError:
-                break
-            if msg["type"] == "move" and self.on_move:
-                self.on_move(tuple(msg["from"]),
-                             tuple(msg["to"]),
-                             msg["color"])
