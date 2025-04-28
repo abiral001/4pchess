@@ -1,8 +1,9 @@
 import pygame
 import sys
+import socket
 from components.game import Game
-from components.gui  import GUI
-from components.net  import HostNetwork, ClientNetwork
+from components.gui import GUI
+from components.net import HostNetwork, ClientNetwork
 
 SCREEN_W, SCREEN_H = 500, 300
 BUTTON_W, BUTTON_H = 200, 50
@@ -64,9 +65,6 @@ def show_mp_menu():
         pygame.display.flip()
 
 def input_text_screen(prompt, width=300, height=50):
-    """
-    On-screen text input. Returns the entered string on Enter.
-    """
     screen = pygame.display.get_surface()
     font   = pygame.font.SysFont(None, 28)
     clock  = pygame.time.Clock()
@@ -104,6 +102,17 @@ def input_text_screen(prompt, width=300, height=50):
         pygame.display.flip()
         clock.tick(30)
 
+def get_local_ip():
+    """Returns the LAN IP by connecting a dummy socket."""
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.connect(("8.8.8.8", 80))
+        return s.getsockname()[0]
+    except Exception:
+        return "127.0.0.1"
+    finally:
+        s.close()
+
 def main():
     mode = show_menu()
     pygame.display.quit()
@@ -120,15 +129,17 @@ def main():
 
     if choice == 'host':
         host_net = HostNetwork()
-        font = pygame.font.SysFont(None, 28)
-        screen = pygame.display.get_surface()
+        font    = pygame.font.SysFont(None, 28)
+        screen  = pygame.display.get_surface()
+        local_ip = get_local_ip()
 
-        # On-screen “press S to start” prompt
+        # Host waiting screen
         while True:
             screen.fill((30, 30, 30))
-            text_surf = font.render("Waiting for players (2–4). Press S to start.",
-                                     True, (255, 255, 255))
-            screen.blit(text_surf, (20, SCREEN_H//2 - 10))
+            ip_surf   = font.render(f"Host IP: {local_ip}", True, (255,255,255))
+            prompt_surf = font.render("Waiting for players (2–4). Press S to start.", True, (200,200,200))
+            screen.blit(ip_surf, (20, SCREEN_H//2 - 40))
+            screen.blit(prompt_surf, (20, SCREEN_H//2))
             pygame.display.flip()
 
             for e in pygame.event.get():
@@ -145,13 +156,11 @@ def main():
 
         game = Game()
         host_net.on_move = game.apply_remote_move
-        # HostNetwork uses ('HOST', port) as the key for its own color
         local_color = host_net.assignments.get(('HOST', host_net.port))
         gui = GUI(game, local_color=local_color, network=host_net)
         gui.run()
 
     else:  # join
-        # On-screen IP entry
         host_ip = input_text_screen("Enter host IP (e.g. 10.10.54.196):", width=280)
         cli_net = ClientNetwork(host_ip)
 
